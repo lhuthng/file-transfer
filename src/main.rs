@@ -10,8 +10,17 @@ struct Cli {
     #[arg(short, long, default_value = ".", help = "Directory to share")]
     dir: PathBuf,
 
-    #[arg(short, long, default_value_t = 9876, help = "Port to listen on")]
+    #[arg(short = 'p', long, default_value_t = 9876, help = "Port to listen on")]
     port: u16,
+
+    #[arg(long, help = "Require this token in X-Token header")]
+    token: Option<String>,
+
+    #[arg(long, help = "Reject all uploads")]
+    read_only: bool,
+
+    #[arg(long, help = "Shut down after N seconds of inactivity")]
+    timeout: Option<u64>,
 }
 
 fn local_ip() -> Option<String> {
@@ -37,12 +46,21 @@ fn main() {
     if let Some(ip) = local_ip() {
         println!("  http://{}:{}", ip, port);
     }
+    if args.token.is_some() {
+        println!("  Token:   required (X-Token header)");
+    }
+    if args.read_only {
+        println!("  Mode:    read-only (uploads rejected)");
+    }
+    if let Some(secs) = args.timeout {
+        println!("  Timeout: {}s inactivity -> shutdown", secs);
+    }
     println!();
     println!("Browse:  curl http://localhost:{}/", port);
     println!("Download: curl http://localhost:{}/path/to/file -O", port);
     println!("Upload:  curl http://localhost:{}/path/to/file -T file.txt", port);
 
-    if let Err(e) = server::serve(&shared_dir, &addr) {
+    if let Err(e) = server::serve(&shared_dir, &addr, args.token, args.read_only, args.timeout) {
         eprintln!("Server error: {}", e);
         std::process::exit(1);
     }
