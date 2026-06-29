@@ -1,6 +1,6 @@
 # file-transfer
 
-[![Release](https://img.shields.io/github/v/release/your-username/file-transfer?label=download)](https://github.com/your-username/file-transfer/releases/latest)
+[![Release](https://img.shields.io/github/v/release/lhuthng/file-transfer?label=download)](https://github.com/lhuthng/file-transfer/releases/latest)
 
 Share a directory over HTTP. One host runs the server - **clients use curl** (no install needed).
 
@@ -8,7 +8,7 @@ Share a directory over HTTP. One host runs the server - **clients use curl** (no
 
 ### Download
 
-Grab the latest binary for your OS from the [Releases page](https://github.com/your-username/file-transfer/releases/latest):
+Grab the latest binary for your OS from the [Releases page](https://github.com/lhuthng/file-transfer/releases/latest):
 
 | File | Platform |
 |---|---|
@@ -30,6 +30,21 @@ Requires the [Rust toolchain](https://rustup.rs/).
 cargo build --release
 ./target/release/file-transfer --dir ~/shared --port 9876
 ```
+
+### macOS
+
+macOS blocks unsigned binaries by default. Before the first run, choose one:
+
+1. **System Settings** → **Privacy & Security** → scroll down → click **Allow Anyway** next to the file-transfer message
+
+2. Or run this command in Terminal:
+   ```bash
+   xattr -d com.apple.quarantine file-transfer-x86_64-macos
+   ```
+
+3. Or right-click the file in Finder, select **Open**, and click **Open anyway**
+
+**Firewall:** When the first client connects, macOS may show a "Do you want to allow incoming connections?" dialog. Click **Allow** - this happens only once.
 
 ## Usage
 

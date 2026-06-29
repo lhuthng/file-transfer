@@ -42,7 +42,7 @@ fn main() {
     println!("Download: curl http://localhost:{}/path/to/file -O", port);
     println!("Upload:  curl http://localhost:{}/path/to/file -T file.txt", port);
 
-    if let Err(e) = server::serve(&shared_dir, &addr, port) {
+    if let Err(e) = server::serve(&shared_dir, &addr) {
         eprintln!("Server error: {}", e);
         std::process::exit(1);
     }

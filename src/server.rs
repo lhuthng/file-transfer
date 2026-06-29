@@ -1,18 +1,15 @@
 use std::fs;
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 pub fn serve(
     shared_dir: &Path,
     addr: &str,
-    port: u16,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     let server = Server::http(addr)?;
     let shared_dir = shared_dir.to_path_buf();
 
-    trigger_firewall_popup(port);
+    println!("  Note: macOS firewall popup appears on first client connection - click Allow (one-time).");
 
     for request in server.incoming_requests() {
         let url = request.url().to_string();
@@ -24,26 +21,6 @@ pub fn serve(
     }
 
     Ok(())
-}
-
-fn trigger_firewall_popup(port: u16) {
-    #[cfg(target_os = "macos")]
-    {
-        eprint!("  Checking macOS firewall...");
-        let addr: std::net::SocketAddr =
-            format!("127.0.0.1:{}", port).parse().unwrap();
-        if let Ok(stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
-            std::thread::sleep(Duration::from_millis(100));
-            drop(stream);
-            eprintln!(" done");
-        } else {
-            eprintln!(" skipped");
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = port;
-    }
 }
 
 fn dispatch(
