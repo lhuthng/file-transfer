@@ -1,14 +1,33 @@
 # file-transfer
 
+[![Release](https://img.shields.io/github/v/release/your-username/file-transfer?label=download)](https://github.com/your-username/file-transfer/releases/latest)
+
 Share a directory over HTTP. One host runs the server - **clients use curl** (no install needed).
 
 ## Quick start
 
-```bash
-# Build
-cargo build --release
+### Download
 
-# Host a directory
+Grab the latest binary for your OS from the [Releases page](https://github.com/your-username/file-transfer/releases/latest):
+
+| File | Platform |
+|---|---|
+| `file-transfer-x86_64-linux` | Linux |
+| `file-transfer-x86_64-macos` | macOS |
+| `file-transfer-x86_64-windows.exe` | Windows |
+
+```bash
+# Linux / macOS
+chmod +x file-transfer-x86_64-*
+./file-transfer-x86_64-linux --dir ~/shared --port 9876
+```
+
+### Build from source
+
+Requires the [Rust toolchain](https://rustup.rs/).
+
+```bash
+cargo build --release
 ./target/release/file-transfer --dir ~/shared --port 9876
 ```
 
@@ -39,10 +58,10 @@ curl http://host:9876/docs/report.pdf -T report.pdf
 
 ## Requirements
 
-- [Rust toolchain](https://rustup.rs/) (rustc + cargo) - only needed on the **host** machine
-- `curl` - any machine that has it (every system)
+- **Host**: any of the pre-built binaries above, or [Rust toolchain](https://rustup.rs/) to build from source
+- **Client**: `curl` (every system has it)
 
-## Build
+## Build from source
 
 ```bash
 cargo build --release

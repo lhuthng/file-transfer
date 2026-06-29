@@ -1,0 +1,31 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: file-transfer-x86_64-linux
+          - os: macos-latest
+            artifact: file-transfer-x86_64-macos
+          - os: windows-latest
+            artifact: file-transfer-x86_64-windows.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+
+      - name: Rename binary
+        run: cp "target/release/file-transfer${{ runner.os == 'Windows' && '.exe' || '' }}" "${{ matrix.artifact }}"
+        shell: bash
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}
