@@ -70,6 +70,40 @@ curl http://host:9876/docs/report.pdf -T report.pdf
 |---|---|---|
 | `-d`, `--dir` | `.` | Directory to share |
 | `-p`, `--port` | `9876` | Port to listen on |
+| `--token` | — | Require `X-Token` header with this value |
+| `--read-only` | `false` | Reject uploads (downloads still work) |
+| `--timeout` | — | Shut down after N seconds of inactivity |
+
+### Token
+
+```bash
+# Server
+file-transfer --token mysecret --dir ~/shared
+
+# Client
+curl -H "X-Token: mysecret" http://host:9876/
+curl -H "X-Token: mysecret" http://host:9876/docs/report.pdf -O
+curl -H "X-Token: mysecret" http://host:9876/docs/file.txt -T file.txt
+```
+
+Requests without the matching header get a `401 Unauthorized` response.
+Note: the token is sent in plaintext — use on trusted networks only.
+
+### Read-only
+
+```bash
+file-transfer --read-only --dir ~/shared
+```
+
+`PUT` requests (uploads) are rejected with `403 Forbidden`. Downloads and browsing still work.
+
+### Timeout
+
+```bash
+file-transfer --timeout 300 --dir ~/shared
+```
+
+The server shuts down automatically after 300 seconds (5 minutes) of no requests. Useful for one-off transfers or to avoid leaving the server running.
 
 ## Requirements
 
