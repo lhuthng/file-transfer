@@ -1,0 +1,9 @@
+[package]
+name = "file-transfer"
+version = "0.1.0"
+edition = "2021"
+description = "CLI file transfer host - share a directory, transfer files via curl"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tiny_http = "0.12"
