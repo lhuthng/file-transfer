@@ -145,11 +145,10 @@ fn handle_upload(
         fs::create_dir_all(parent)?;
     }
 
-    let mut data = Vec::new();
-    request.as_reader().read_to_end(&mut data)?;
-    fs::write(path, &data)?;
+    let mut file = fs::File::create(path)?;
+    let size = std::io::copy(&mut request.as_reader(), &mut file)?;
 
-    println!("Uploaded {} ({})", display, format_size(data.len()));
+    println!("Uploaded {} ({})", display, format_size(size as usize));
     respond_plain(request, StatusCode(200), "OK")
 }
 
