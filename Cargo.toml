@@ -7,3 +7,4 @@ description = "CLI file transfer host - share a directory, transfer files via cu
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 tiny_http = "0.12"
+zip = "2"

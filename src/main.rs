@@ -59,6 +59,7 @@ fn main() {
     println!("Browse:  curl http://localhost:{}/", port);
     println!("Download: curl http://localhost:{}/path/to/file -O", port);
     println!("Upload:  curl http://localhost:{}/path/to/file -T file.txt", port);
+    println!("Note: add trailing slash to list a directory (e.g. /docs/)");
 
     if let Err(e) = server::serve(&shared_dir, &addr, args.token, args.read_only, args.timeout) {
         eprintln!("Server error: {}", e);

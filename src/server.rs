@@ -1,7 +1,9 @@
 use std::fs;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
+use zip::ZipWriter;
 
 pub fn serve(
     shared_dir: &Path,
@@ -111,10 +113,16 @@ fn dispatch(
                 None => return respond_plain(request, StatusCode(400), "Invalid path"),
             };
 
-            if path.is_dir() {
-                handle_list_dir(&path, request)
+            if url.ends_with('/') {
+                if path.is_dir() {
+                    handle_list_dir(&path, request)
+                } else {
+                    respond_plain(request, StatusCode(404), "Not found")
+                }
             } else if path.is_file() {
                 handle_download(shared_dir, url, &path, request)
+            } else if path.is_dir() {
+                handle_zip_directory(url, &path, request)
             } else {
                 respond_plain(request, StatusCode(404), "Not found")
             }
@@ -225,6 +233,66 @@ fn handle_upload(
 
     println!("Uploaded {} ({})", display, format_size(size as usize));
     respond_plain(request, StatusCode(200), "OK")
+}
+
+fn handle_zip_directory(
+    url: &str,
+    path: &Path,
+    request: Request,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let display = url.trim_start_matches('/');
+    let data = zip_directory(path)?;
+    let size = data.len();
+    println!("Zipped {} ({})", display, format_size(size));
+    let response = Response::from_data(data)
+        .with_header(content_type("application/zip"))
+        .with_header(
+            Header::from_bytes(
+                &b"Content-Disposition"[..],
+                format!("attachment; filename=\"{}.zip\"", display).as_bytes(),
+            )
+            .unwrap(),
+        );
+    request.respond(response)?;
+    Ok(())
+}
+
+fn zip_directory(
+    dir: &Path,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let buf = Cursor::new(Vec::new());
+    let mut zip = ZipWriter::new(buf);
+    add_dir_to_zip(&mut zip, dir, "")?;
+    let buf = zip.finish()?;
+    Ok(buf.into_inner())
+}
+
+fn add_dir_to_zip(
+    zip: &mut ZipWriter<Cursor<Vec<u8>>>,
+    dir: &Path,
+    prefix: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    for entry in fs::read_dir(dir)?.flatten() {
+        let ft = entry.file_type()?;
+        let name = entry.file_name();
+        let path = entry.path();
+        let relative = if prefix.is_empty() {
+            name.to_string_lossy().to_string()
+        } else {
+            format!("{}/{}", prefix, name.to_string_lossy())
+        };
+
+        let opts = zip::write::SimpleFileOptions::default();
+        if ft.is_dir() {
+            zip.add_directory(&relative, opts)?;
+            add_dir_to_zip(zip, &path, &relative)?;
+        } else if ft.is_file() {
+            zip.start_file(&relative, opts)?;
+            let mut file = fs::File::open(&path)?;
+            std::io::copy(&mut file, zip)?;
+        }
+    }
+    Ok(())
 }
 
 fn format_size(size: usize) -> String {
