@@ -1,9 +1,17 @@
+mod paths;
+mod worker_pool;
+mod zip_stream;
+
 use std::fs;
-use std::io::Cursor;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
-use zip::ZipWriter;
+
+use self::paths::safe_path;
+use self::worker_pool::WorkerPool;
+use self::zip_stream::stream_directory_zip;
 
 pub fn serve(
     shared_dir: &Path,
@@ -13,24 +21,31 @@ pub fn serve(
     idle_timeout: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     let server = Server::http(addr)?;
-    let shared_dir = shared_dir.to_path_buf();
+    let shared_dir = Arc::new(shared_dir.to_path_buf());
+    let token = Arc::new(token);
+    let workers = worker_pool::worker_count();
+    let dispatcher = WorkerPool::new(
+        workers,
+        Arc::clone(&shared_dir),
+        Arc::clone(&token),
+        read_only,
+    );
 
     println!("  Note: macOS firewall popup appears on first client connection - click Allow (one-time).");
+    println!("  Workers: {}", workers);
 
     match idle_timeout {
-        Some(secs) => serve_with_timeout(&server, &shared_dir, &token, read_only, secs),
-        None => serve_forever(&server, &shared_dir, &token, read_only),
+        Some(secs) => serve_with_timeout(&server, &dispatcher, secs),
+        None => serve_forever(&server, &dispatcher),
     }
 }
 
 fn serve_forever(
     server: &Server,
-    shared_dir: &Path,
-    token: &Option<String>,
-    read_only: bool,
+    dispatcher: &WorkerPool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     for request in server.incoming_requests() {
-        if let Err(e) = handle_request(shared_dir, token, read_only, request) {
+        if let Err(e) = dispatcher.dispatch(request) {
             eprintln!("Error: {}", e);
         }
     }
@@ -39,9 +54,7 @@ fn serve_forever(
 
 fn serve_with_timeout(
     server: &Server,
-    shared_dir: &Path,
-    token: &Option<String>,
-    read_only: bool,
+    dispatcher: &WorkerPool,
     timeout_secs: u64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     let timeout = Duration::from_secs(timeout_secs);
@@ -53,12 +66,11 @@ fn serve_with_timeout(
             println!("Idle timeout reached ({}s), shutting down", timeout_secs);
             return Ok(());
         }
-        let remaining = timeout - elapsed;
 
-        match server.recv_timeout(remaining) {
+        match server.recv_timeout(timeout - elapsed) {
             Ok(Some(request)) => {
                 last_activity = Instant::now();
-                if let Err(e) = handle_request(shared_dir, token, read_only, request) {
+                if let Err(e) = dispatcher.dispatch(request) {
                     eprintln!("Error: {}", e);
                 }
             }
@@ -74,21 +86,17 @@ fn serve_with_timeout(
     }
 }
 
-fn handle_request(
+pub(super) fn handle_request(
     shared_dir: &Path,
     token: &Option<String>,
     read_only: bool,
     request: Request,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-    let url = request.url().to_string();
+    let url = request.url().to_owned();
     let method = request.method().clone();
 
-    if let Some(ref t) = token {
-        let ok = request
-            .headers()
-            .iter()
-            .any(|h| h.field.equiv("X-Token") && h.value.as_str() == t.as_str());
-        if !ok {
+    if let Some(expected_token) = token {
+        if !has_valid_token(request.headers(), expected_token) {
             return respond_plain(request, StatusCode(401), "Unauthorized");
         }
     }
@@ -100,6 +108,12 @@ fn handle_request(
     dispatch(shared_dir, method, &url, request)
 }
 
+fn has_valid_token(headers: &[Header], expected_token: &str) -> bool {
+    headers
+        .iter()
+        .any(|h| h.field.equiv("X-Token") && h.value.as_str() == expected_token)
+}
+
 fn dispatch(
     shared_dir: &Path,
     method: Method,
@@ -108,8 +122,8 @@ fn dispatch(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     match method {
         Method::Get => {
-            let path = match safe_path(shared_dir, url) {
-                Some(p) => p,
+            let path = match safe_path(shared_dir, url, false) {
+                Some(path) => path,
                 None => return respond_plain(request, StatusCode(400), "Invalid path"),
             };
 
@@ -120,7 +134,7 @@ fn dispatch(
                     respond_plain(request, StatusCode(404), "Not found")
                 }
             } else if path.is_file() {
-                handle_download(shared_dir, url, &path, request)
+                handle_download(url, &path, request)
             } else if path.is_dir() {
                 handle_zip_directory(url, &path, request)
             } else {
@@ -128,35 +142,14 @@ fn dispatch(
             }
         }
         Method::Put => {
-            let path = match safe_path(shared_dir, url) {
-                Some(p) => p,
+            let path = match safe_path(shared_dir, url, true) {
+                Some(path) => path,
                 None => return respond_plain(request, StatusCode(400), "Invalid path"),
             };
             handle_upload(url, &path, request)
         }
         _ => respond_plain(request, StatusCode(404), "Not found"),
     }
-}
-
-fn safe_path(shared_dir: &Path, url: &str) -> Option<PathBuf> {
-    let relative = url.trim_start_matches('/');
-
-    if relative.split('/').any(|c| c == ".." || c == ".") {
-        return None;
-    }
-
-    let path = shared_dir.join(relative);
-
-    if path.exists() {
-        let canonical = path.canonicalize().ok()?;
-        let shared_canonical = shared_dir.canonicalize().ok()?;
-        if canonical.starts_with(&shared_canonical) {
-            return Some(canonical);
-        }
-        return None;
-    }
-
-    Some(path)
 }
 
 fn content_type(mime: &str) -> Header {
@@ -182,24 +175,23 @@ fn handle_list_dir(
     let mut entries = Vec::new();
     for entry in fs::read_dir(path)?.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        let ft = entry.file_type().ok();
-        if ft.map_or(false, |t| t.is_dir()) {
+        let file_type = entry.file_type().ok();
+        if file_type.is_some_and(|t| t.is_dir()) {
             entries.push(format!("{}/", name));
-        } else if ft.map_or(false, |t| t.is_file()) {
+        } else if file_type.is_some_and(|t| t.is_file()) {
             entries.push(name);
         }
     }
     entries.sort();
     entries.dedup();
+
     let body = entries.join("\n") + "\n";
     println!("Listed {} items from {}", entries.len(), path.display());
-    let response = Response::from_string(body);
-    request.respond(response)?;
+    request.respond(Response::from_string(body))?;
     Ok(())
 }
 
 fn handle_download(
-    _shared_dir: &Path,
     url: &str,
     path: &Path,
     request: Request,
@@ -211,8 +203,7 @@ fn handle_download(
         display,
         format_size(fs::metadata(path).map(|m| m.len() as usize).unwrap_or(0))
     );
-    let response = Response::from_file(file)
-        .with_header(content_type("application/octet-stream"));
+    let response = Response::from_file(file).with_header(content_type("application/octet-stream"));
     request.respond(response)?;
     Ok(())
 }
@@ -241,57 +232,9 @@ fn handle_zip_directory(
     request: Request,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     let display = url.trim_start_matches('/');
-    let data = zip_directory(path)?;
-    let size = data.len();
-    println!("Zipped {} ({})", display, format_size(size));
-    let response = Response::from_data(data)
-        .with_header(content_type("application/zip"))
-        .with_header(
-            Header::from_bytes(
-                &b"Content-Disposition"[..],
-                format!("attachment; filename=\"{}.zip\"", display).as_bytes(),
-            )
-            .unwrap(),
-        );
+    println!("Streaming zip {}", display);
+    let response = stream_directory_zip(display, path)?;
     request.respond(response)?;
-    Ok(())
-}
-
-fn zip_directory(
-    dir: &Path,
-) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
-    let buf = Cursor::new(Vec::new());
-    let mut zip = ZipWriter::new(buf);
-    add_dir_to_zip(&mut zip, dir, "")?;
-    let buf = zip.finish()?;
-    Ok(buf.into_inner())
-}
-
-fn add_dir_to_zip(
-    zip: &mut ZipWriter<Cursor<Vec<u8>>>,
-    dir: &Path,
-    prefix: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-    for entry in fs::read_dir(dir)?.flatten() {
-        let ft = entry.file_type()?;
-        let name = entry.file_name();
-        let path = entry.path();
-        let relative = if prefix.is_empty() {
-            name.to_string_lossy().to_string()
-        } else {
-            format!("{}/{}", prefix, name.to_string_lossy())
-        };
-
-        let opts = zip::write::SimpleFileOptions::default();
-        if ft.is_dir() {
-            zip.add_directory(&relative, opts)?;
-            add_dir_to_zip(zip, &path, &relative)?;
-        } else if ft.is_file() {
-            zip.start_file(&relative, opts)?;
-            let mut file = fs::File::open(&path)?;
-            std::io::copy(&mut file, zip)?;
-        }
-    }
     Ok(())
 }
 
@@ -304,4 +247,72 @@ fn format_size(size: usize) -> String {
         unit += 1;
     }
     format!("{:.1} {}", size, UNITS[unit])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{handle_request, has_valid_token};
+    use crate::server::zip_stream::stream_directory_zip;
+    use tiny_http::{Header, Method, TestRequest};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::str::FromStr;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_temp_dir() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("file-transfer-test-{unique}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn token_validation_accepts_only_matching_header() {
+        let matching = vec![Header::from_str("X-Token: secret").unwrap()];
+        let wrong = vec![Header::from_str("X-Token: nope").unwrap()];
+
+        assert!(has_valid_token(&matching, "secret"));
+        assert!(!has_valid_token(&wrong, "secret"));
+        assert!(!has_valid_token(&[], "secret"));
+    }
+
+    #[test]
+    fn read_only_mode_rejects_put_uploads() {
+        let root = make_temp_dir();
+        let request: tiny_http::Request = TestRequest::new()
+            .with_method(Method::Put)
+            .with_path("/upload.txt")
+            .with_body("hello")
+            .into();
+
+        handle_request(&root, &None, true, request).unwrap();
+        assert!(!root.join("upload.txt").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_download_uses_zip_response_headers() {
+        let root = make_temp_dir();
+        let docs = root.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(docs.join("note.txt"), "hello").unwrap();
+
+        let response = stream_directory_zip("docs", &docs).unwrap();
+        let headers = response.headers();
+
+        assert_eq!(response.status_code().0, 200);
+        assert!(headers.iter().any(|h| {
+            h.field.equiv("Content-Type") && h.value.as_str() == "application/zip"
+        }));
+        assert!(headers.iter().any(|h| {
+            h.field.equiv("Content-Disposition")
+                && h.value.as_str() == "attachment; filename=\"docs.zip\""
+        }));
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }
